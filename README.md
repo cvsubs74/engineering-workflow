@@ -16,24 +16,21 @@ This repo ships a pre-wired **harness** — agent roles, slash commands, hooks, 
 ## Quick start
 
 ```bash
-# 1. Clone this boilerplate as your new product repo
 git clone https://github.com/cvsubs74/engineering-workflow my-product
 cd my-product
-rm -rf .git && git init -b main
-
-# 2. Describe the product
-$EDITOR docs/spec.md
-
-# 3. Launch Claude Code and kick off
 claude
-> /kickoff
+> /start
 ```
 
-`/kickoff` will:
-1. Run the **product-manager** agent to read `docs/spec.md` and seed `harness/features.json`.
-2. Run the **architect** agent to draft `docs/architecture.md`.
-3. Run the **devops** agent to fill in `harness/init.sh`, `harness/verify.sh`, and `.github/workflows/ci.yml` for the chosen stack.
-4. Commit the seeded state.
+`/start` is a wizard that:
+
+1. Detaches your new directory from the boilerplate's git history (`rm -rf .git && git init -b main`).
+2. Asks 8 conversational questions about what you're building and drafts `docs/spec.md`.
+3. Shows you the draft and lets you edit before saving.
+4. Optionally creates a GitHub repo for you (private by default; asks for account/visibility).
+5. Makes the initial commit and pushes if you set up a remote.
+6. Hands off to `/kickoff` — which dispatches the product-manager, architect, and devops agents to seed the feature backlog, choose a stack, and fill in `init.sh`/`verify.sh`/CI.
+7. Prints a next-steps banner with `/status`, `/next`, `/parallel`.
 
 After that, every new session is just:
 
@@ -41,6 +38,19 @@ After that, every new session is just:
 > /next                 # build the highest-priority pending feature
 # or
 > /parallel F004        # build F004 in an isolated git worktree
+```
+
+### Power-user path (skip the wizard)
+
+If you'd rather edit `docs/spec.md` by hand:
+
+```bash
+git clone https://github.com/cvsubs74/engineering-workflow my-product
+cd my-product
+rm -rf .git && git init -b main
+$EDITOR docs/spec.md
+claude
+> /kickoff
 ```
 
 ## The loop

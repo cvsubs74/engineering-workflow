@@ -73,6 +73,19 @@ If invoked via `/parallel <id>`:
 | Specialized agents | `.claude/agents/` |
 | Hooks | `.claude/hooks/` |
 
+## Entry points
+
+| Command | When to use |
+|---|---|
+| `/start` | First session after cloning. Wizard that drafts `docs/spec.md`, optionally creates a GitHub repo, then runs `/kickoff`. |
+| `/kickoff` | Power-user alternative: you already wrote `docs/spec.md` by hand. Seeds features, architecture, init/verify scripts. |
+| `/next` | Every subsequent session. Builds the next P0 feature. |
+| `/parallel <id>` | Spin off concurrent work in a git worktree. |
+| `/status` | See backlog + recent activity. |
+| `/verify` | Read-only sanity check of the dev environment. |
+| `/retro <id>` | Post-feature reflection appended to `progress.md`. |
+| `/ship <id>` | Merge a worktree feature back into main. |
+
 ## Session-end checklist
 
 Before stopping, confirm:

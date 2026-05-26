@@ -4,6 +4,8 @@
     "allow": [
       "Bash(git:*)",
       "Bash(gh:*)",
+      "Bash(rm -rf .git)",
+      "Bash(git init:*)",
       "Bash(./harness/init.sh)",
       "Bash(./harness/verify.sh)",
       "Bash(bash harness/init.sh)",
