@@ -1,67 +1,75 @@
 #!/usr/bin/env bash
-# new-worktree.sh <feature-id>
-# Creates ../<repo>-wt-<id> as a git worktree on a new branch feat/<id>
-# and records the path in harness/features.json.
+# new-worktree.sh <issue-number>
+#
+# Creates ../<repo>-wt-issue-<n> as a git worktree on a new branch
+# issue-<n>-<slug> off main. Resolves the issue title via gh and posts a
+# comment on the issue announcing the worktree path.
+#
+# Does NOT touch features.json (that file no longer exists). All state
+# lives on GitHub.
 
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
-  echo "usage: $0 <feature-id>" >&2
+  echo "usage: $0 <issue-number>" >&2
   exit 2
 fi
 
-FID="$1"
+N="${1#\#}"
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required" >&2
+command -v gh >/dev/null || { echo "error: gh CLI required" >&2; exit 1; }
+
+# Fetch issue title + state
+ISSUE_JSON=$(gh issue view "$N" --json title,state,number 2>/dev/null || true)
+if [ -z "$ISSUE_JSON" ]; then
+  echo "error: issue #$N not found in this repo" >&2
+  exit 1
+fi
+STATE=$(echo "$ISSUE_JSON" | jq -r .state)
+if [ "$STATE" != "OPEN" ]; then
+  echo "error: issue #$N is $STATE; refusing to start a worktree on a closed issue" >&2
   exit 1
 fi
 
-# Validate feature exists and is open
-EXISTS=$(jq --arg id "$FID" '[.features[] | select(.id == $id)] | length' harness/features.json)
-if [ "$EXISTS" -eq 0 ]; then
-  echo "error: feature $FID not found in harness/features.json" >&2
-  exit 1
+TITLE=$(echo "$ISSUE_JSON" | jq -r .title)
+# Slug: strip "[Type] " prefix, lowercase, non-alnum→hyphen, trim, max 40 chars
+SLUG=$(printf '%s' "$TITLE" \
+  | sed -E 's/^\[[^]]+\] *//' \
+  | tr 'A-Z' 'a-z' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+  | cut -c1-40 \
+  | sed -E 's/-+$//')
+
+if [ -z "$SLUG" ]; then
+  SLUG="work"
 fi
 
-PASSES=$(jq -r --arg id "$FID" '.features[] | select(.id == $id) | .passes' harness/features.json)
-if [ "$PASSES" = "true" ]; then
-  echo "error: feature $FID already passes; nothing to build" >&2
-  exit 1
-fi
-
-EXISTING_WT=$(jq -r --arg id "$FID" '.features[] | select(.id == $id) | .worktree // ""' harness/features.json)
-if [ -n "$EXISTING_WT" ] && [ "$EXISTING_WT" != "null" ]; then
-  echo "error: feature $FID already has a worktree at $EXISTING_WT" >&2
-  exit 1
-fi
-
+BRANCH="issue-${N}-${SLUG}"
 REPO_NAME="$(basename "$ROOT")"
-WT_PATH="$(cd .. && pwd)/${REPO_NAME}-wt-${FID}"
-BRANCH="feat/${FID}"
+WT_PATH="$(cd .. && pwd)/${REPO_NAME}-wt-issue-${N}"
 
 if [ -e "$WT_PATH" ]; then
   echo "error: $WT_PATH already exists" >&2
   exit 1
 fi
 
-# Create the worktree on a new branch off main
-BASE_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  echo "error: branch $BRANCH already exists" >&2
+  exit 1
+fi
+
+BASE_BRANCH="$(git symbolic-ref --short HEAD)"
 git worktree add -b "$BRANCH" "$WT_PATH" "$BASE_BRANCH"
 
-# Update features.json on main
-jq --arg id "$FID" --arg wt "$WT_PATH" \
-  '(.features[] | select(.id == $id) | .worktree) = $wt' \
-  harness/features.json > harness/features.json.tmp \
-  && mv harness/features.json.tmp harness/features.json
-
-git add harness/features.json
-git commit -m "Worktree for $FID at $(basename "$WT_PATH")"
+# Announce on the issue
+gh issue comment "$N" --body "Worktree opened: \`$WT_PATH\` on branch \`$BRANCH\`."
 
 echo
-echo "Worktree ready: $WT_PATH (branch $BRANCH)"
+echo "Worktree ready: $WT_PATH"
+echo "Branch:         $BRANCH"
+echo "Issue:          #$N — $TITLE"
 echo
 echo "Open a new terminal:"
 echo "  cd \"$WT_PATH\""

@@ -1,85 +1,51 @@
 #!/usr/bin/env bash
-# merge-worktree.sh <feature-id>
-# Merges feat/<id> into main, verifies, removes the worktree, clears
-# the worktree field in harness/features.json. Run from inside the worktree.
+# merge-worktree.sh
+#
+# Run from inside a worktree on a branch named issue-<n>-<slug>. Verifies
+# locally, pushes the branch, opens a PR via gh (with "Closes #<n>" in the
+# body) if one isn't already open. Does NOT merge locally — branch protection
+# on main and `/ship` finish the job.
 
 set -euo pipefail
 
-if [ $# -ne 1 ]; then
-  echo "usage: $0 <feature-id>" >&2
-  exit 2
-fi
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
 
-FID="$1"
+command -v gh >/dev/null || { echo "error: gh CLI required" >&2; exit 1; }
 
-WT_ROOT="$(git rev-parse --show-toplevel)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-EXPECTED_BRANCH="feat/${FID}"
+BRANCH="$(git symbolic-ref --short HEAD)"
+case "$BRANCH" in
+  issue-*) ;;
+  *) echo "error: not on an issue-* branch (currently on $BRANCH)" >&2; exit 1 ;;
+esac
 
-if [ "$BRANCH" != "$EXPECTED_BRANCH" ]; then
-  echo "error: not on $EXPECTED_BRANCH (currently on $BRANCH)" >&2
-  exit 1
-fi
-
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required" >&2
+N=$(printf '%s' "$BRANCH" | sed -E 's/^issue-([0-9]+).*/\1/')
+if [ -z "$N" ] || [ "$N" = "$BRANCH" ]; then
+  echo "error: could not extract issue number from branch '$BRANCH'" >&2
   exit 1
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-  echo "error: working tree not clean" >&2
+  echo "error: working tree not clean — commit or stash before /ship" >&2
   exit 1
 fi
 
-# Find the main repo path (the worktree this branch was created from)
-MAIN_ROOT="$(git worktree list --porcelain | awk '$1=="worktree"{p=$2} $1=="bare"{p=""} $1=="branch" && $2 ~ /^refs\/heads\/main$|^refs\/heads\/master$/ {print p; exit}')"
-
-if [ -z "$MAIN_ROOT" ] || [ ! -d "$MAIN_ROOT" ]; then
-  echo "error: could not locate main worktree" >&2
-  exit 1
-fi
-
-# Confirm passes=true on main's view of features.json
-PASSES=$(jq -r --arg id "$FID" '.features[] | select(.id == $id) | .passes' "$MAIN_ROOT/harness/features.json")
-if [ "$PASSES" != "true" ]; then
-  echo "error: feature $FID is not passes=true. Tester must flip the flag first." >&2
-  exit 1
-fi
-
-# verify in the worktree
 echo "Running verify.sh in worktree..."
 bash harness/verify.sh
 
-# Push branch state to main (we're a local worktree, so no remote step needed yet)
-cd "$MAIN_ROOT"
-MAIN_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+echo "Pushing $BRANCH to origin..."
+git push -u origin "$BRANCH"
 
-echo "Merging $EXPECTED_BRANCH into $MAIN_BRANCH..."
-if ! git merge --no-ff "$EXPECTED_BRANCH" -m "Merge $EXPECTED_BRANCH"; then
-  echo "error: merge conflict. Resolve manually then rerun /ship." >&2
-  exit 1
+# Open PR if missing
+EXISTING_PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+if [ -z "$EXISTING_PR" ] || [ "$EXISTING_PR" = "null" ]; then
+  TITLE=$(gh issue view "$N" --json title --jq .title 2>/dev/null || echo "$BRANCH")
+  gh pr create --base main --head "$BRANCH" \
+    --title "$TITLE (#$N)" \
+    --body "Closes #${N}"
+  EXISTING_PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
 fi
-
-echo "Running verify.sh on $MAIN_BRANCH..."
-if ! bash harness/verify.sh; then
-  echo "error: verify failed on main after merge. Reverting." >&2
-  git reset --merge HEAD~1
-  exit 1
-fi
-
-# Clear worktree field in features.json
-jq --arg id "$FID" \
-  '(.features[] | select(.id == $id) | .worktree) = null' \
-  harness/features.json > harness/features.json.tmp \
-  && mv harness/features.json.tmp harness/features.json
-
-git add harness/features.json
-git commit -m "Shipped $FID; worktree removed"
-
-# Remove the worktree
-git worktree remove "$WT_ROOT"
-git branch -d "$EXPECTED_BRANCH" || true
 
 echo
-echo "Shipped $FID. Recent log:"
-git log --oneline -5
+echo "PR #$EXISTING_PR open against main. Awaiting CI + review."
+echo "Run /ship to merge once CI is green and the reviewer has approved."
