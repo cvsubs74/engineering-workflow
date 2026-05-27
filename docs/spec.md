@@ -1,6 +1,6 @@
 # Product spec
 
-> **Fill in this file before running `/kickoff`.** The product-manager agent reads it to seed `harness/features.json`. The architect reads it to draft `docs/architecture.md`. The clearer this is, the better the first session goes.
+> **Fill in this file before running `/kickoff`.** The product-manager agent reads it to file GitHub Issues (epics + stories) as the backlog. The architect reads it to draft `docs/architecture.md`. The clearer this is, the better the first session goes.
 
 ## What we're building
 

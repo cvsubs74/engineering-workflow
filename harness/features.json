@@ -1,5 +1,0 @@
-{
-  "$schema": "./features.schema.json",
-  "_doc": "Source of truth for the backlog. Only product-manager seeds new features. Only tester flips passes from false to true. Only /parallel sets worktree. owner is a session id, cleared when a session ends without finishing.",
-  "features": []
-}
