@@ -1,48 +1,80 @@
 ---
-description: Summarize backlog and recent progress
+description: Summarize backlog and recent progress from GitHub
 allowed-tools: Bash, Read
 ---
 
 # /status
 
-Print a concise snapshot of the project state.
+Print a concise snapshot of the project state. GitHub is the source of truth — read from `gh`, not from local files.
 
 ## Steps
 
-1. **Backlog** — from `harness/features.json`:
-   ```bash
-   jq -r '
-     .features
-     | group_by(.priority)
-     | map({priority: .[0].priority, total: length, done: ([.[] | select(.passes)] | length)})
-     | .[]
-     | "[\(.priority)] \(.done)/\(.total)"
-   ' harness/features.json
-   ```
+### 1. Backlog by priority
 
-2. **In flight** — features with `owner != null` and `passes: false`:
-   ```bash
-   jq -r '.features[] | select(.owner != null and .passes == false) | "  \(.id) \(.title) — owner: \(.owner) — worktree: \(.worktree // "main")"' harness/features.json
-   ```
+```bash
+for p in P0 P1 P2; do
+  open=$(gh issue list --state open  --label "priority:$p" -L 500 --json number --jq 'length')
+  closed=$(gh issue list --state closed --label "priority:$p" -L 500 --json number --jq 'length')
+  total=$((open + closed))
+  echo "[$p] $closed/$total  (open: $open)"
+done
+```
 
-3. **Worktrees**:
-   ```bash
-   git worktree list
-   ```
+### 2. In flight
 
-4. **Recent commits**:
-   ```bash
-   git log --oneline -10
-   ```
+Issues assigned to me, open:
 
-5. **Last progress entry**:
-   ```bash
-   tail -n 30 harness/progress.md
-   ```
+```bash
+gh issue list --state open --assignee @me \
+  --json number,title,labels \
+  --jq '.[] | "  #\(.number) \(.title)  [\(.labels | map(.name) | join(","))]"'
+```
 
-6. **Next pick** — what `/next` would choose:
-   ```bash
-   jq -r '[.features[] | select(.passes == false and .owner == null)] | sort_by(.priority, .id) | .[0] | "  \(.priority) \(.id): \(.title)"' harness/features.json
-   ```
+### 3. Open PRs
 
-Format as a short report. No prose narration.
+```bash
+gh pr list --state open --json number,title,headRefName,isDraft,statusCheckRollup \
+  --jq '.[] | "  #\(.number) \(.title)  (\(.headRefName))  \(.isDraft|if . then "DRAFT" else "" end)"'
+```
+
+### 4. Worktrees
+
+```bash
+git worktree list
+```
+
+### 5. Recent commits on main
+
+```bash
+git log --oneline -10 main
+```
+
+### 6. Last progress entry
+
+```bash
+tail -n 30 harness/progress.md
+```
+
+### 7. Next pick — what `/next` would choose
+
+```bash
+N=$(bash scripts/gh-next-issue.sh 2>/dev/null) || N=""
+if [ -n "$N" ]; then
+  gh issue view "$N" --json number,title,labels \
+    --jq '"  #\(.number) \(.title)  [\(.labels | map(.name) | join(","))]"'
+else
+  echo "  (no open unassigned stories)"
+fi
+```
+
+### 8. Project board URL
+
+```bash
+OWNER=$(jq -r .owner .github/project-config.json 2>/dev/null)
+PROJ=$(jq -r .project_number .github/project-config.json 2>/dev/null)
+if [ -n "$OWNER" ] && [ -n "$PROJ" ] && [ "$PROJ" != "null" ]; then
+  echo "Project: https://github.com/users/$OWNER/projects/$PROJ"
+fi
+```
+
+Format as a short report with these section headers. No prose narration.

@@ -1,42 +1,130 @@
 ---
-description: Merge a worktree feature back into main and clean up
+description: Merge a PR back into main and clean up — runs from the issue branch or its worktree
 allowed-tools: Bash, Read, Edit
-argument-hint: <feature-id>
 ---
 
-# /ship $ARGUMENTS
+# /ship
 
-Merge the worktree for `$ARGUMENTS` back into `main`, verify the result, and clean up.
+Squash-merge the PR for the current issue into `main`, confirm the issue auto-closes, move the project card to Done, and remove the worktree if applicable.
 
 ## Preconditions
 
-- You are running this from inside the worktree for `$ARGUMENTS` (i.e. branch `feat/$ARGUMENTS`).
-- The feature has `passes: true` in `harness/features.json`.
-- `git status` is clean.
-- `bash harness/verify.sh` exits 0 in the worktree.
+You are on a branch named `issue-<n>-*` (either in the main repo or in its worktree).
 
-If any precondition fails, stop and print the failing one.
+The PR for this branch is OPEN, CI is GREEN, and the reviewer has APPROVED (or the harness is solo and you're self-approving — branch protection still requires CI).
 
 ## Steps
 
-1. Confirm preconditions above.
-2. Run `bash scripts/merge-worktree.sh $ARGUMENTS`. This will:
-   - Switch to the main repo path.
-   - Fetch and rebase the feature branch onto `main`.
-   - Merge with `--no-ff` (preserves the feature commit boundary).
-   - Run `bash harness/verify.sh` on `main`. If it fails, abort the merge (`git reset --merge HEAD~1`) and surface the failure.
-   - Remove the worktree and delete the branch.
-   - Clear the `worktree` field on the feature in `harness/features.json`.
-3. Append to `harness/progress.md` on `main`:
+### 1. Extract issue number from branch
 
-```
-## <YYYY-MM-DD HH:MM> — shipped F<NNN>
-- Merged from worktree, verify green on main
+```bash
+BRANCH=$(git symbolic-ref --short HEAD)
+case "$BRANCH" in
+  issue-*) ;;
+  *) echo "error: not on an issue-* branch ($BRANCH)" >&2; exit 1 ;;
+esac
+N=$(echo "$BRANCH" | sed -E 's/^issue-([0-9]+).*/\1/')
 ```
 
-4. Commit and print the new `git log --oneline -5`.
+### 2. Verify locally
+
+```bash
+git status                  # clean
+bash harness/verify.sh      # exit 0
+```
+
+### 3. Push any final commits and confirm PR state
+
+```bash
+git push
+PR=$(gh pr list --head "$BRANCH" --json number,state,mergeable --jq '.[0]')
+[ -n "$PR" ] || { echo "error: no PR for $BRANCH — run scripts/merge-worktree.sh first or open one manually" >&2; exit 1; }
+echo "$PR" | jq -e '.state == "OPEN" and .mergeable == "MERGEABLE"' >/dev/null \
+  || { echo "error: PR not mergeable. State: $PR"; exit 1; }
+```
+
+### 4. Confirm CI is green and review is approved
+
+```bash
+PR_NUM=$(echo "$PR" | jq -r .number)
+gh pr checks "$PR_NUM" --required   # exits non-zero if any required check is failing/pending
+gh pr view "$PR_NUM" --json reviewDecision --jq '.reviewDecision' \
+  | grep -qE '^(APPROVED|null)$'    # APPROVED, or null if no protection enforced reviews
+```
+
+If checks aren't green, stop. Branch protection will block the merge anyway — surface the failing check to the user.
+
+### 5. Merge
+
+```bash
+gh pr merge "$PR_NUM" --squash --delete-branch
+```
+
+This:
+- Squash-merges into `main`.
+- Closes issue `#$N` via the `Closes #$N` in the PR body.
+- Deletes the remote branch.
+
+### 6. Update the project board
+
+```bash
+bash scripts/gh-project.sh set-status "$N" "Done"
+```
+
+### 7. Clean up the local branch and worktree
+
+If we're in a worktree:
+
+```bash
+WT_ROOT=$(git rev-parse --show-toplevel)
+MAIN_ROOT=$(git worktree list --porcelain | awk '$1=="worktree"{p=$2} $1=="branch" && $2 ~ /^refs\/heads\/main$/ {print p; exit}')
+cd "$MAIN_ROOT"
+git fetch --prune
+git worktree remove "$WT_ROOT"
+git branch -D "$BRANCH" 2>/dev/null || true
+```
+
+If we're in the main repo:
+
+```bash
+git checkout main
+git pull --ff-only
+git branch -D "$BRANCH" 2>/dev/null || true
+```
+
+### 8. Append progress.md entry
+
+On `main`:
+
+```
+## <YYYY-MM-DD HH:MM> — shipped #<N>
+- PR #<pr-num>, squash-merged, branch deleted
+- Issue closed, project card → Done
+```
+
+Commit + push:
+
+```bash
+git add harness/progress.md
+git commit -m "log(ship): #$N shipped"
+git push
+```
+
+### 9. Report
+
+Print:
+
+```
+✓ Shipped #<N>.
+  PR:     <url>
+  Issue:  closed
+  Board:  Done
+Recent log:
+  <git log --oneline -5>
+```
 
 ## Failure handling
 
-- If verify fails on main post-merge, the script aborts the merge automatically. You'll get the verify output. Diagnose, fix in the worktree (which still exists if abort succeeded), and retry `/ship`.
-- If merge conflicts, do NOT auto-resolve. Print the conflicted files and ask the user.
+- **Required check failing:** surface which check, link to its run, stop. Don't override.
+- **Merge conflict:** `gh pr merge` will report it. Tell the user to rebase locally on `main`, push, and re-run `/ship`. Don't auto-resolve.
+- **Worktree remove fails:** typically means uncommitted state. Surface, ask the user.

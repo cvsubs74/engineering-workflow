@@ -1,36 +1,51 @@
 ---
-description: Spawn a git worktree for parallel work on a feature
+description: Spawn a git worktree for parallel work on a GitHub Issue
 allowed-tools: Bash, Read, Edit
-argument-hint: <feature-id>
+argument-hint: <issue-number>
 ---
 
 # /parallel $ARGUMENTS
 
-Create an isolated git worktree so another Claude session can build feature `$ARGUMENTS` in parallel without conflicting with the current session.
+Create an isolated git worktree so another Claude session can build issue `#$ARGUMENTS` in parallel without conflicting with the current session.
 
 ## Steps
 
-1. Confirm `$ARGUMENTS` is a valid feature id in `harness/features.json` with `passes: false`.
-2. Confirm it has no `worktree` already assigned. If it does, print the existing path and stop.
-3. Run `bash scripts/new-worktree.sh $ARGUMENTS`. This will:
-   - Create `../<repo-name>-wt-$ARGUMENTS` as a git worktree on a new branch `feat/$ARGUMENTS`.
-   - Update `harness/features.json` to set `worktree` to the new path.
-   - Commit the features.json update on `main`.
-4. Print the worktree path and instruct the user:
+1. Confirm `$ARGUMENTS` is a number. Strip leading `#` if present.
+2. Confirm the issue is OPEN, has no assignee, and is not labeled `type:epic`:
 
-```
-Worktree ready at <path>. Open a new terminal and run:
+   ```bash
+   gh issue view $ARGUMENTS --json state,assignees,labels --jq \
+     'if .state != "OPEN" then "error:not-open"
+      elif (.assignees | length) > 0 then "error:assigned"
+      elif (.labels | map(.name) | index("type:epic")) then "error:epic"
+      else "ok" end'
+   ```
 
-  cd <path>
-  claude
-  > /next
+   Stop with the matching error if not `ok`.
 
-That session will pick up $ARGUMENTS automatically (it's the only feature owned by this branch).
+3. Run:
 
-When done, run /ship $ARGUMENTS from the worktree to merge back.
-```
+   ```bash
+   bash scripts/new-worktree.sh $ARGUMENTS
+   ```
+
+   This creates `../<repo>-wt-issue-$ARGUMENTS` on branch `issue-$ARGUMENTS-<slug>` and posts a comment on the issue announcing the worktree path.
+
+4. Print:
+
+   ```
+   Worktree ready at <path>. Open a new terminal:
+
+     cd <path>
+     claude
+     > /next
+
+   That session will pick up issue #$ARGUMENTS automatically (it's the issue on this branch).
+   When done, run /ship from inside the worktree to push, open a PR, and merge.
+   ```
 
 ## Notes
 
-- Don't enter the worktree from this session. The point is a fresh Claude session per worktree so contexts don't tangle.
-- If `scripts/new-worktree.sh` fails, do not partially commit; print the error.
+- Don't enter the worktree from this session. The point is a fresh Claude session per worktree.
+- If `scripts/new-worktree.sh` fails, surface the error verbatim — it already prints clear messages.
+- The worktree path is recorded only as a comment on the issue. There is no local state file.

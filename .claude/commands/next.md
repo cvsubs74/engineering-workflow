@@ -1,11 +1,11 @@
 ---
-description: Build the next highest-priority pending feature, end to end
+description: Build the next highest-priority open GitHub Issue, end to end
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent
 ---
 
 # /next
 
-Build **one** feature, sequentially, on the current branch. Use `/parallel <id>` instead if you want to work in a worktree.
+Build **one** issue, sequentially, on a new branch off `main`. Use `/parallel <issue-#>` instead if you want to work in a worktree.
 
 ## Steps
 
@@ -13,79 +13,99 @@ Build **one** feature, sequentially, on the current branch. Use `/parallel <id>`
 
 ```bash
 pwd
-git status                  # must be clean
+git status                  # working tree must be clean
 git log --oneline -5
 bash harness/init.sh
 bash harness/verify.sh      # must exit 0
 ```
 
-If `verify.sh` fails, **stop**. Fix the baseline as its own commit before picking a feature.
+If `verify.sh` fails, **stop**. Fix the baseline as its own commit on `main` before picking an issue.
 
-### 2. Pick the feature
-
-```bash
-jq -r '.features[] | select(.passes == false and .owner == null) | "\(.priority) \(.id) \(.title)"' harness/features.json \
-  | sort | head -1
-```
-
-The first line is your feature. Set `owner`:
+### 2. Pick the issue
 
 ```bash
-SESSION_ID="session-$(date +%s)-$$"
-jq --arg id "<feature-id>" --arg owner "$SESSION_ID" \
-  '(.features[] | select(.id == $id) | .owner) = $owner' \
-  harness/features.json > harness/features.json.tmp \
-  && mv harness/features.json.tmp harness/features.json
-git add harness/features.json
-git commit -m "Claim <feature-id>"
+N=$(bash scripts/gh-next-issue.sh)
 ```
 
-### 3. Run the agent pipeline
+`N` is the issue number. If the script exits non-zero, the backlog is empty or every story/bug is assigned — tell the user, stop.
 
-For the chosen feature, dispatch in order:
-
-1. **product-manager** — re-read the feature's acceptance criteria. Flag ambiguity.
-2. **architect** — only if the feature crosses module boundaries or adds dependencies.
-3. **implementer** — write the code. Touches app code only, not harness or other features.
-4. **tester** — runs `verify.sh` and an end-to-end check that maps directly to acceptance bullets. Flips `passes: true` only with evidence (logs, screenshots, HTTP responses).
-5. **reviewer** — reads the diff. Blocks only on real issues.
-
-Each agent's prompt: pass the feature's `id`, `title`, `description`, `acceptance` array, and a pointer to `docs/architecture.md`.
-
-### 4. Commit
+Fetch the title for branch naming and announce:
 
 ```bash
-git add -A
-git commit -m "F<NNN>: <title>"
+TITLE=$(gh issue view "$N" --json title --jq .title)
+echo "Building issue #$N — $TITLE"
 ```
 
-### 5. Update progress
-
-Append to `harness/progress.md`:
-
-```
-## <YYYY-MM-DD HH:MM> — F<NNN> <title>
-- Implementer: <one-line summary of approach>
-- Tester evidence: <how it was verified>
-- Reviewer: <ok | issues>
-```
-
-### 6. Release the claim
-
-If `passes: true`, leave `owner` as the session id (records who shipped it).
-If you ran out of time and `passes` is still `false`, set `owner: null` so another session can pick it up.
+### 3. Claim the issue
 
 ```bash
-jq --arg id "<feature-id>" \
-  '(.features[] | select(.id == $id) | .owner) = null' \
-  harness/features.json > harness/features.json.tmp \
-  && mv harness/features.json.tmp harness/features.json
-git add harness/features.json
-git commit -m "Release <feature-id> for another session"
+gh issue edit "$N" --add-assignee @me
+bash scripts/gh-project.sh set-status "$N" "In progress"
 ```
+
+### 4. Create the branch
+
+Derive a slug from the title (lowercase, alnum + hyphens, max 40 chars) — see `scripts/new-worktree.sh` for the canonical recipe. Branch name: `issue-<n>-<slug>`.
+
+```bash
+git checkout main
+git pull --ff-only
+git checkout -b "issue-${N}-<slug>"
+```
+
+### 5. Run the agent pipeline
+
+Dispatch in order, passing each agent the issue number `N`:
+
+1. **product-manager** — re-read `gh issue view $N` body. Canonicalize the schema if needed. Flag ambiguous acceptance.
+2. **architect** — only if the issue is `type:epic`-spanning or labeled `area:*` for a new domain.
+3. **implementer** — write code. Commit messages format: `<type>(<area>): <subject> (#$N)`.
+4. **tester** — runs `verify.sh`, posts evidence comment, ticks `### Acceptance criteria` checkboxes (only the tester touches those).
+5. **reviewer** — runs after the PR is open (step 7); blocks via `gh pr review --request-changes`.
+
+### 6. Push the branch
+
+```bash
+git push -u origin "issue-${N}-<slug>"
+```
+
+### 7. Open the PR
+
+```bash
+gh pr create --base main --head "issue-${N}-<slug>" \
+  --title "$TITLE (#$N)" \
+  --body "Closes #$N"
+bash scripts/gh-project.sh set-status "$N" "In review"
+```
+
+Now invoke the **reviewer** agent on the open PR.
+
+### 8. Append progress.md entry
+
+```
+## <YYYY-MM-DD HH:MM> — #<N> <title>
+- Implementer: <one-line approach>
+- Tester evidence: posted on issue
+- PR: #<pr-number>
+- Reviewer: approved | changes requested
+```
+
+Commit and push:
+
+```bash
+git add harness/progress.md
+git commit -m "log(#$N): session note"
+git push
+```
+
+### 9. Hand off
+
+Tell the user: PR URL, current state ("In review" until reviewer approves and CI is green), next command (`/ship`).
 
 ## Hard rules
 
-- **Do not edit `acceptance`** to make a test pass. If acceptance is wrong, surface to user.
-- **Do not touch other features** in the same session. If you find a blocker, file a new feature entry and stop.
+- **Do not edit `### Acceptance criteria`** to make a check pass. Push back to product-manager if it's wrong.
+- **Do not touch other issues** in the same session. If you find a blocker, file a new issue via `gh issue create` and stop.
 - **Do not skip `verify.sh`.** It must be green before *and* after.
+- **Do not merge the PR yourself.** `/ship` does that, after reviewer approves and CI is green.
+- **One issue per session.** When the PR is open and reviewer-approved, stop. `/ship` is a separate step.
